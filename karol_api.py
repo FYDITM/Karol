@@ -1,7 +1,7 @@
 import requests
 
 
-karol_url = "http://163.172.155.213:5001"
+karol_url = "http://163.172.155.213:5555"
 
 
 def send_message(message):

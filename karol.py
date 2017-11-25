@@ -13,6 +13,7 @@ from random import choice
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, request
+import crypto_checker as crypto
 
 import notifier
 
@@ -33,8 +34,28 @@ def initialize():
     bot.connect()
     bot_thread = threading.Thread(target=main_loop)
     bot_thread.start()
+    crypto_thread = threading.Thread(target=keep_checking_crypto)
+    crypto_thread.start()
     app = Flask(__name__)
     return app
+
+
+def keep_checking_crypto():
+    check_crypto_change('btc')
+    check_crypto_change('eth')
+    check_crypto_change('xmr')
+    time.sleep(3600 * 6)
+
+
+def check_crypto_change(currency):
+    log("Sprawdzam zmianę {0}...".format(currency))
+    try:
+        change = crypto.change_24h('bitfinex', currency)
+        log("Zmiana {0}: {1}".format(currency, change))
+        if abs(change) >= 10:
+            bot.send_message("FYDITM: {0} zmieniło się o {1:.2f} % w ciągu ostatinch 24h!".format(currency, change))
+    except Exception as ex:
+        log(str(ex), logging.ERROR)
 
 
 def main_loop():
@@ -90,6 +111,7 @@ class BotEngine:
         self.serv_options = self.config['server_options']
         self.password = self.serv_options['password']
         self.mail = self.serv_options['mail']
+        self.crypto_trigger = "$"
         self.bot_options = self.config['bot_options']
         self.quote_picker = QuotePicker(self.bot_options['quotesFilename'])
         self.triggers = self.bot_options['triggers'].strip().split('\n')
@@ -141,6 +163,7 @@ class BotEngine:
         while not pinged:
             pinged = self.keep_alive()
 
+        self.identify(self.password)
         line = "JOIN " + self.channel + "\r\n"
         log("Próbuję wejść na kanał " + self.channel)
         log(line)
@@ -161,7 +184,6 @@ class BotEngine:
             d = datetime.now() - start_time
             print("Aktywacja za " + str(x - d.seconds))
 
-        self.identify(self.password)
         self.send_message("Szczęść Boże!")
         self.on_channel = True
         self.server.settimeout(1)
@@ -196,7 +218,7 @@ class BotEngine:
     def any_triggers(self, line):
         text = line.lower()
         if self.check_quote_triggers(text) or self.check_for_input(line) or self.check_for_notifications(line) or self.check_for_url(line) \
-                or self.manual(line) or self.check_jak_trigger(text) or self.check_greet_trigger(line) or self.check_bye_trigger(line):
+                or self.manual(line) or self.check_jak_trigger(text) or self.check_greet_trigger(line) or self.check_bye_trigger(line) or self.check_crypto_trigger(line):
             return True
         return False
 
@@ -295,6 +317,29 @@ class BotEngine:
                 return True
         return False
 
+    def check_crypto_trigger(self, line):
+        target = None
+        nick_end = line.find(self.nick_end)
+        nick = line[1:nick_end]
+        text_start = line[1:].find(":")
+        text = line[text_start + 2:].lower()
+        result = ""
+        currency = text[1:4]
+        if text[0] == self.crypto_trigger:
+            if self.priv(text):
+                end = text.find(self.nick_end)
+                target = text[1:end]
+            result = nick + ": "
+            if ":" in text:
+                result += "{0:.2f} PLN".format(crypto.get_price_pln(currency))
+            elif "%" in text:
+                result += "{0:.2f} % w ciągu 24h".format(crypto.change_24h('bitfinex', currency))
+            else:
+                result += "{0:.2f} USD".format(crypto.get_price_usd('bitfinex', currency))
+            self.send_message(result, target)
+            return True
+        return False
+
     def check_bye_trigger(self, line):
         target = None
         nick_end = line.find(self.nick_end)
@@ -320,12 +365,15 @@ class BotEngine:
             target = nick
         a = line.find(self.alarm_trigger)
         t = line.find(self.timer_trigger)
+        mask = "*!*" + self.get_host(line)
         if a > 0:  # alarm
             start = a + len(self.alarm_trigger) + 1
             timestring = line[start:start + 8].strip()
             log("timestring= " + timestring, logging.DEBUG)
-            message = line[start + 8:].strip()
             # TODO: wydzielić część wspólną, jak to kurwa wygląda
+            message = line[start + 8:].strip()
+            if self.antywojak(nick, mask, message):
+                return False
             log("message= " + message, logging.DEBUG)
             # if "!k" or "!b" in message :
             #     self.kick(self.channel, nick)
@@ -341,9 +389,11 @@ class BotEngine:
             return True
         if t > 0:  # timer
             start = t + len(self.timer_trigger) + 1
+            message = line[start + 8:].strip()
+            if self.antywojak(nick, mask, message):
+                return False
             timestring = line[start:start + 8].strip()
             log("timestring= " + timestring, logging.DEBUG)
-            message = line[start + 8:].strip()
             log("message= " + message, logging.DEBUG)
             # if "!k" or "!b" in message :
             #     self.kick(self.channel, nick)
@@ -392,9 +442,34 @@ class BotEngine:
         log(line)
         self.server.send(line.encode())
 
+    def recover(self, pword):
+        line = "PRIVMSG NickServ recover {0} {1} \r\n".format(self.nick, pword)
+        log(line)
+        self.server.send(line.encode())
+
     def kick(self, channel, target, reason=""):
         line = "KICK {0} {1} {2} \r\n".format(channel, target, reason)
+        log(line)
         self.server.send(line.encode())
+
+    def ban(self, channel, target):
+        line = "MODE {0} +b {1} \r\n".format(channel, target)
+        log(line)
+        self.server.send(line.encode())
+
+    def antywojak(self, nick, mask, message):
+        restricted = ["iwat", "adamczyk", "patryk", "icuck", "rogacz",
+                      "cuck", "kciuck", "kuk", "kciuk", "fyditm", "poraż", "fryty"]
+        m = message.lower()
+        for word in restricted:
+            if word in m:
+                self.kick(self.channel, nick, "Autodenuncjacja")
+                self.ban(self.channel, mask)
+                return True
+        return False
+
+    def get_host(self, line):
+        return line[line.find("@"):line.find(" PRIVMSG")]
 
 
 app = initialize()
@@ -411,6 +486,6 @@ def send_message():
 
 if __name__ == "__main__":
     try:
-        app.run()
+        app.run(host="0.0.0.0", port=5555)
     except Exception as ex:
         log(str(ex), logging.ERROR)
