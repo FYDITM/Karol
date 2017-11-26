@@ -9,11 +9,14 @@ import re
 import socket
 import time
 import threading
+import dateutil.parser
 from random import choice
 import requests
 from bs4 import BeautifulSoup
 from flask import Flask, request
 import crypto_checker as crypto
+from tasks import *
+
 
 import notifier
 
@@ -30,6 +33,7 @@ api_port = 9001
 def initialize():
     global CLI, LOG, bot
     init_logger()
+    create_tables()
     bot = BotEngine()
     bot.connect()
     bot_thread = threading.Thread(target=main_loop)
@@ -191,10 +195,11 @@ class BotEngine:
         # self.register_on_server(self.password, self.mail)
 
     def keep_alive(self, ignore=False):
-        n = self.notifier.check_notifications()
-        if n:
-            self.send_message(n.get_full_message(),
-                              target=n.target, priority=True)
+        # n = self.notifier.check_notifications()
+        # if n:
+        #     self.send_message(n.get_full_message(),
+        #                       target=n.target, priority=True)
+        self.get_tasks()
         self.readbuffer += self.server.recv(1024).decode()
         temp = self.readbuffer.split('\n')
         self.readbuffer = temp.pop()
@@ -237,6 +242,23 @@ class BotEngine:
             self.server.send(response.encode())
             return True
         return False
+
+    def get_tasks(self):
+        db = Session()
+        now = datetime.now()
+        now_str = str(now)[0:-8]
+        log("pobieram zadania z " + now_str, log.DEBUG)
+        tasklist = db.query(Task).filter(Task.execution.like("{0}%".format(now_str)))
+        log("pobrano " + str(tasklist.count()), log.DEBUG)
+        for t in tasklist:
+            task_time = dateutil.parser.parse(t.execution)
+            if task_time <= now:
+                if t.type == TaskType.alarm.value:
+                    n = notifier.Notification(t.nick, dateutil.parser.parse(t.execution), t.arguments, t.targeted)
+                    self.send_message(n.get_full_message(), target=n.target, priority=True)
+                db.delete(t)
+        db.commit()
+        db.close()
 
     def manual(self, line):
         target = None
@@ -360,52 +382,45 @@ class BotEngine:
         # :necro666!Jakub@irc-l29s8s.finemedia.pl PRIVMSG #vichan :notify: 13:15:00 tekst
         nick_end = line.find(self.nick_end)
         nick = line[1:nick_end]
+        targeted = False
         target = None
         if self.priv(line):
+            targeted = True
             target = nick
         a = line.find(self.alarm_trigger)
         t = line.find(self.timer_trigger)
         mask = "*!*" + self.get_host(line)
-        if a > 0:  # alarm
-            start = a + len(self.alarm_trigger) + 1
-            timestring = line[start:start + 8].strip()
+        if a > 0 or t > 0:
+            trigger = a
+            if t > a:
+                trigger = t
+            time_start = trigger + len(self.alarm_trigger)
+            time_end = line[time_start].find(' ')
+            timestring = line[time_start:time_end].strip()
             log("timestring= " + timestring, logging.DEBUG)
-            # TODO: wydzielić część wspólną, jak to kurwa wygląda
-            message = line[start + 8:].strip()
+            message = line[time_end:].strip()
             if self.antywojak(nick, mask, message):
                 return False
             log("message= " + message, logging.DEBUG)
-            # if "!k" or "!b" in message :
-            #     self.kick(self.channel, nick)
-            #     return False
             if len(message) == 0:
                 message = None
             try:
-                self.notifier.set_alarm(timestring, nick, message, target)
-                self.send_message(
-                    nick + ": Ustawiono powiadomienie na " + timestring, target)
+                result = None
+                if a > 0:
+                    result = self.notifier.set_alarm(timestring, nick, mask, message, targeted)
+                    if result == Result.OK:
+                        self.send_message(nick + ": Ustawiono powiadomienie na " + timestring, target)
+                elif t > 0:
+                    result = self.notifier.set_timer(timestring, nick, mask, message, targeted)
+                    if result == Result.OK:
+                        self.send_message(nick + ": Ustawiono odliczanie " + timestring, target)
+                if result == Result.Warn:
+                    self.send_message(nick + ": Dość", target)
+                elif result == Result.Ban:
+                    self.kick(self.channel, nick, "Powiedziałem dość")
+                    self.ban(self.channel, mask)
             except notifier.TimeFormatException as err:
                 self.send_message(nick + ": " + err.message, target)
-            return True
-        if t > 0:  # timer
-            start = t + len(self.timer_trigger) + 1
-            message = line[start + 8:].strip()
-            if self.antywojak(nick, mask, message):
-                return False
-            timestring = line[start:start + 8].strip()
-            log("timestring= " + timestring, logging.DEBUG)
-            log("message= " + message, logging.DEBUG)
-            # if "!k" or "!b" in message :
-            #     self.kick(self.channel, nick)
-            #     return False
-            if len(message) == 0:
-                message = None
-            try:
-                self.notifier.set_timer(timestring, nick, message, target)
-                self.send_message(
-                    nick + ": Ustawiono odliczanie " + timestring, target)
-            except notifier.TimeFormatException as err:
-                self.send_message(nick + ": " + err.message)
             return True
         return False
 
@@ -459,7 +474,7 @@ class BotEngine:
 
     def antywojak(self, nick, mask, message):
         restricted = ["iwat", "adamczyk", "patryk", "icuck", "rogacz",
-                      "cuck", "kciuck", "kuk", "kciuk", "fyditm", "poraż", "fryty"]
+                      "cuck", "kciuck", "kuk", "kciuk", "fyditm", "poraż", "fryty"]  # wyrzucić do settingsów
         m = message.lower()
         for word in restricted:
             if word in m:
