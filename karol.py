@@ -195,11 +195,7 @@ class BotEngine:
         # self.register_on_server(self.password, self.mail)
 
     def keep_alive(self, ignore=False):
-        # n = self.notifier.check_notifications()
-        # if n:
-        #     self.send_message(n.get_full_message(),
-        #                       target=n.target, priority=True)
-        self.get_tasks()
+        self.handle_tasks()
         self.readbuffer += self.server.recv(1024).decode()
         temp = self.readbuffer.split('\n')
         self.readbuffer = temp.pop()
@@ -243,13 +239,13 @@ class BotEngine:
             return True
         return False
 
-    def get_tasks(self):
+    def handle_tasks(self):
         db = Session()
         now = datetime.now()
         now_str = str(now)[0:-8]
-        log("pobieram zadania z " + now_str, log.DEBUG)
+        log("pobieram zadania z " + now_str, logging.DEBUG)
         tasklist = db.query(Task).filter(Task.execution.like("{0}%".format(now_str)))
-        log("pobrano " + str(tasklist.count()), log.DEBUG)
+        log("pobrano " + str(tasklist.count()), logging.DEBUG)
         for t in tasklist:
             task_time = dateutil.parser.parse(t.execution)
             if task_time <= now:
@@ -391,17 +387,19 @@ class BotEngine:
         t = line.find(self.timer_trigger)
         mask = "*!*" + self.get_host(line)
         if a > 0 or t > 0:
-            trigger = a
-            if t > a:
-                trigger = t
-            time_start = trigger + len(self.alarm_trigger)
-            time_end = line[time_start].find(' ')
-            timestring = line[time_start:time_end].strip()
-            log("timestring= " + timestring, logging.DEBUG)
+            time_start = None
+            if a > 0:
+                time_start = a + len(self.alarm_trigger) + 1
+                log("alarm (od {0})".format(time_start))
+            if t > 0:
+                time_start = t + len(self.timer_trigger) + 1
+                log("timer (od {0})".format(time_start))
+            timestring = line[time_start:time_start + 8].strip()
+            log("timestring=" + timestring, logging.DEBUG)
             message = line[time_end:].strip()
             if self.antywojak(nick, mask, message):
                 return False
-            log("message= " + message, logging.DEBUG)
+            log("message=" + message, logging.DEBUG)
             if len(message) == 0:
                 message = None
             try:
@@ -478,6 +476,7 @@ class BotEngine:
         m = message.lower()
         for word in restricted:
             if word in m:
+                log("Znaleziono zakazane słowo '{0}' w wiadomości '{1}'".format(word, m), logging.DEBUG)
                 self.kick(self.channel, nick, "Autodenuncjacja")
                 self.ban(self.channel, mask)
                 return True
