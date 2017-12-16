@@ -3,6 +3,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from datetime import datetime, timedelta
 from enum import Enum
+import dateutil.parser
 
 engine = create_engine('sqlite:///baza.db')
 Base = declarative_base()
@@ -47,11 +48,17 @@ def add_task(nick, host, type, execution, arguments, targeted):
     tasks_per_user = db.query(Task).filter(Task.host == host).count()
     new_task = None
     if tasks_per_user == MAX_TASKS_PER_USER:
-        lock_until = datetime.now() + timedelta(hours=1)
-        new_task = Task(nick=nick, host=host, type=TaskType.lock.value, added=datetime.now().isoformat(' '), execution=lock_until.isoformat(' '), targeted=targeted)
+        new_task = add_lock(nick, host, targeted)
         result = Result.Warn
     elif tasks_per_user > MAX_TASKS_PER_USER:
-        result = Result.Ban
+        warn = db.query(Task).filter(Task.type == 0)[0]
+        warn_time = dateutil.parser.parse(warn.added)
+        if warn_time >= datetime.now() - timedelta(minutes=5):
+            result = Result.Ban
+        else:
+            db.delete(warn)
+            new_task = add_lock(nick, host, targeted)
+            result = Result.Warn
     else:
         new_task = Task(nick=nick, host=host, type=type, added=datetime.now().isoformat(' '), execution=execution, arguments=arguments, targeted=targeted)
         result = Result.OK
@@ -60,3 +67,9 @@ def add_task(nick, host, type, execution, arguments, targeted):
         db.commit()
         db.close()
     return result
+
+
+def add_lock(nick, host, targeted):
+    lock_until = datetime.now() + timedelta(hours=1)
+    new_task = Task(nick=nick, host=host, type=TaskType.lock.value, added=datetime.now().isoformat(' '), execution=lock_until.isoformat(' '), targeted=targeted)
+    return new_task

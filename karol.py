@@ -12,6 +12,7 @@ import threading
 import dateutil.parser
 from random import choice
 import requests
+import subprocess
 from bs4 import BeautifulSoup
 from flask import Flask, request
 import crypto_checker as crypto
@@ -57,7 +58,7 @@ def check_crypto_change(currency):
         change = crypto.change_24h('bitfinex', currency)
         log("Zmiana {0}: {1}".format(currency, change))
         if abs(change) >= 10:
-            bot.send_message("FYDITM: {0} zmieniło się o {1:.2f} % w ciągu ostatinch 24h!".format(currency, change))
+            bot.send_message("FYDITM: {0} zmieniło się o {1:.2f} % w ciągu ostatnich 24h!".format(currency, change))
     except Exception as ex:
         log(str(ex), logging.ERROR)
 
@@ -69,8 +70,9 @@ def main_loop():
         except Exception as ex:
             if ex.args[0] == 'timed out':
                 continue  # bez logowania timeoutów
-            log(str(ex), logging.ERROR)
-            if "Istniejące połączenie zostało gwałtownie zamknięte przez zdalnego hosta" in ex.args[0]:
+            err = str(ex)
+            log(err, logging.ERROR)
+            if "Istniejące połączenie zostało gwałtownie zamknięte przez zdalnego hosta" in ex.args[0] or "Ping timeout" in ex.args[0] or "połączenie zostało przerwane" in ex.args[0]:
                 # zamknięte połączenie logujemy i wychodzimy z programu
                 return
 
@@ -143,6 +145,7 @@ class BotEngine:
 
         self.url_pattern = re.compile(
             pattern="https?:\/\/(www\.)?[-a-zA-Z0-9@:%._\+~#=]{2,256}\.[a-z]{2,6}([-a-zA-Z0-9@:%_,\+.~#?&//=]*)?")
+        self.message_pattern = re.compile(pattern="PRIVMSG #?\w+ :")
         self.nick_begin = ":"
         self.nick_end = "!"
 
@@ -217,9 +220,10 @@ class BotEngine:
         self.send_to_server()
 
     def any_triggers(self, line):
-        text = line.lower()
-        if self.check_quote_triggers(text) or self.check_for_input(line) or self.check_for_notifications(line) or self.check_for_url(line) \
-                or self.manual(line) or self.check_jak_trigger(text) or self.check_greet_trigger(line) or self.check_bye_trigger(line) or self.check_crypto_trigger(line):
+        text = self.get_message(line)
+        text_lower = text.lower()
+        if self.check_quote_triggers(text_lower) or self.check_for_input(line) or self.check_for_notifications(line) or self.check_for_url(text) \
+                or self.manual(text) or self.check_jak_trigger(text_lower) or self.check_greet_trigger(line) or self.check_bye_trigger(line) or self.check_crypto_trigger(line):
             return True
         return False
 
@@ -238,6 +242,13 @@ class BotEngine:
             self.server.send(response.encode())
             return True
         return False
+
+    def get_message(self, line):
+        start = self.message_pattern.search(line)
+        if start:
+            return line[start.end():]
+        else:
+            return ""
 
     def handle_tasks(self):
         db = Session()
@@ -263,6 +274,10 @@ class BotEngine:
                 end = line.find(self.nick_end)
                 target = line[1:end]
             self.send_message(self.man, target)
+
+    def get_commit_hash(self):
+        out = subprocess.Popen("git rev-parse --short HEAD", stdout=subprocess.PIPE).communicate()[0]
+        return out.decode().strip()
 
     def check_for_url(self, line):
         if "Quit:" in line:  # niektóre klienty w Quit dają adres aplikacji
@@ -324,7 +339,7 @@ class BotEngine:
         target = None
         nick_end = line.find(self.nick_end)
         nick = line[1:nick_end]
-        text = line.lower()
+        text = self.get_message(line).lower()
         for t in self.greet_triggers:
             if t in text:
                 if self.priv(text):
@@ -339,13 +354,12 @@ class BotEngine:
         target = None
         nick_end = line.find(self.nick_end)
         nick = line[1:nick_end]
-        text_start = line[1:].find(":")
-        text = line[text_start + 2:].lower()
+        text = self.get_message(line).lower()
         result = ""
-        currency = text[1:4]
-        if text[0] == self.crypto_trigger:
+        if len(text) >= 4 and text[0] == self.crypto_trigger:
+            currency = text[1:4]
             if self.priv(text):
-                end = text.find(self.nick_end)
+                end = line.find(self.nick_end)
                 target = text[1:end]
             result = nick + ": "
             if ":" in text:
@@ -362,7 +376,7 @@ class BotEngine:
         target = None
         nick_end = line.find(self.nick_end)
         nick = line[1:nick_end]
-        text = line.lower()
+        text = self.get_message(line).lower()
         for t in self.bye_triggers:
             if t in text:
                 if self.priv(text):
@@ -378,25 +392,26 @@ class BotEngine:
         # :necro666!Jakub@irc-l29s8s.finemedia.pl PRIVMSG #vichan :notify: 13:15:00 tekst
         nick_end = line.find(self.nick_end)
         nick = line[1:nick_end]
+        msg = self.get_message(line)
         targeted = False
         target = None
         if self.priv(line):
             targeted = True
             target = nick
-        a = line.find(self.alarm_trigger)
-        t = line.find(self.timer_trigger)
+        a = msg.find(self.alarm_trigger)
+        t = msg.find(self.timer_trigger)
         mask = "*!*" + self.get_host(line)
-        if a > 0 or t > 0:
+        if a >= 0 or t >= 0:
             time_start = None
-            if a > 0:
+            if a >= 0:
                 time_start = a + len(self.alarm_trigger) + 1
                 log("alarm (od {0})".format(time_start))
-            if t > 0:
+            if t >= 0:
                 time_start = t + len(self.timer_trigger) + 1
                 log("timer (od {0})".format(time_start))
-            timestring = line[time_start:time_start + 8].strip()
+            timestring = msg[time_start:time_start + 8].strip()
             log("timestring=" + timestring, logging.DEBUG)
-            message = line[time_end:].strip()
+            message = msg[time_start + 9:].strip()
             if self.antywojak(nick, mask, message):
                 return False
             log("message=" + message, logging.DEBUG)
@@ -404,11 +419,11 @@ class BotEngine:
                 message = None
             try:
                 result = None
-                if a > 0:
+                if a >= 0:
                     result = self.notifier.set_alarm(timestring, nick, mask, message, targeted)
                     if result == Result.OK:
                         self.send_message(nick + ": Ustawiono powiadomienie na " + timestring, target)
-                elif t > 0:
+                elif t >= 0:
                     result = self.notifier.set_timer(timestring, nick, mask, message, targeted)
                     if result == Result.OK:
                         self.send_message(nick + ": Ustawiono odliczanie " + timestring, target)

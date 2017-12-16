@@ -43,8 +43,8 @@ class Notifier:
             raise TimeFormatException(timestring)
         elif len(t) == 3:
             time = now.replace(hour=int(t[0]), minute=int(t[1]), second=int(t[2]))
-            if time > now:
-                time.replace(day=now.day() + 1)
+            if time < now:
+                time.replace(day=now.day + 1)
         # n = Notification(nick, time, message, target)
         if message is None:
             message = default_message
