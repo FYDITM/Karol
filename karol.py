@@ -357,17 +357,20 @@ class BotEngine:
         text = self.get_message(line).lower()
         result = ""
         if len(text) >= 4 and text[0] == self.crypto_trigger:
-            currency = text[1:4]
+            currency = text[1:].strip()
             if self.priv(text):
                 end = line.find(self.nick_end)
                 target = text[1:end]
             result = nick + ": "
-            if ":" in text:
-                result += "{0:.2f} PLN".format(crypto.get_price_pln(currency))
-            elif "%" in text:
-                result += "{0:.2f} % w ciągu 24h".format(crypto.change_24h('bitfinex', currency))
-            else:
-                result += "{0:.2f} USD".format(crypto.get_price_usd('bitfinex', currency))
+            try:
+                if ":" in text:
+                    result += "{0:.2f} PLN".format(crypto.get_price_pln(currency))
+                elif "%" in text:
+                    result += "{0:.2f} % w ciągu 24h".format(crypto.change_24h('bitfinex', currency))
+                else:
+                    result += "{0:.2f} USD".format(crypto.get_price_usd('bitfinex', currency))
+            except Exception as ex:
+                result += "Cholibka, nie widzę wyraźnie. {0}".format(str(ex))
             self.send_message(result, target)
             return True
         return False
