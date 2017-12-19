@@ -1,5 +1,6 @@
 # coding: utf-8
 import codecs
+import sys
 import configparser
 from datetime import datetime
 from datetime import timedelta
@@ -26,7 +27,7 @@ LOG = 1
 
 data_lock = threading.Lock()
 bot = None
-logger = None  # globalny logger żeby zawsze korzystać z jednego
+logger = logging.getLogger("karol")
 app = None
 api_port = 9001
 
@@ -53,14 +54,14 @@ def keep_checking_crypto():
 
 
 def check_crypto_change(currency):
-    log("Sprawdzam zmianę {0}...".format(currency))
+    logger.info("Sprawdzam zmianę {0}...".format(currency))
     try:
         change = crypto.change_24h('bitfinex', currency)
-        log("Zmiana {0}: {1}".format(currency, change))
+        logger.info("Zmiana {0}: {1}".format(currency, change))
         if abs(change) >= 10:
             bot.send_message("FYDITM: {0} zmieniło się o {1:.2f} % w ciągu ostatnich 24h!".format(currency, change))
     except Exception as ex:
-        log(str(ex), logging.ERROR)
+        logger.exception(ex)
 
 
 def main_loop():
@@ -70,8 +71,7 @@ def main_loop():
         except Exception as ex:
             if ex.args[0] == 'timed out':
                 continue  # bez logowania timeoutów
-            err = str(ex)
-            log(err, logging.ERROR)
+            logger.exception(ex)
             if "Istniejące połączenie zostało gwałtownie zamknięte przez zdalnego hosta" in ex.args[0] or "Ping timeout" in ex.args[0] or "połączenie zostało przerwane" in ex.args[0]:
                 # zamknięte połączenie logujemy i wychodzimy z programu
                 return
@@ -83,22 +83,29 @@ def init_logger():
     log_filename = "logi_watykanu.log"
     logger = logging.getLogger()
     logger.setLevel(logging.DEBUG)
-    handler = logging.handlers.RotatingFileHandler(
+    file_handler = logging.handlers.RotatingFileHandler(
         log_filename, maxBytes=max_file_size, backupCount=5)
-    logger.addHandler(handler)
+    formatter = logging.Formatter("%(asctime)s: %(message)s")
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.INFO)
+    logger.addHandler(file_handler)
+    cli_handler = logging.StreamHandler(sys.stdout)
+    cli_handler.setFormatter(formatter)
+    cli_handler.setLevel(logging.DEBUG)
+    logger.addHandler(cli_handler)
 
 
-def log(text, level=logging.INFO):
-    global CLI, LOG, logger
-    t = str(datetime.now())
-    line = t + ": " + text
-    if CLI:
-        try:
-            print(line)
-        except:
-            pass
-    if LOG:
-        logger.log(level, line)
+# def logger.info(text, level=logging.INFO):
+#     global CLI, LOG, logger
+#     t = str(datetime.now())
+#     line = t + ": " + text
+#     if CLI:
+#         try:
+#             print(line)
+#         except:
+#             pass
+#     if LOG:
+#         logger.logger.info(level, line)
 
 
 class QuotePicker:
@@ -155,7 +162,7 @@ class BotEngine:
     def connect(self):
         self.server = socket.socket()
         endpoint = (self.serv_options['host'], int(self.serv_options['port']))
-        log("Próbuję połączyć się z " + endpoint[0])
+        logger.info("Próbuję połączyć się z " + endpoint[0])
         self.server.connect(endpoint)
         # NICK <username>
         line = "NICK %s\r\n" % self.serv_options['nickName']
@@ -172,8 +179,8 @@ class BotEngine:
 
         self.identify(self.password)
         line = "JOIN " + self.channel + "\r\n"
-        log("Próbuję wejść na kanał " + self.channel)
-        log(line)
+        logger.info("Próbuję wejść na kanał " + self.channel)
+        logger.info(line)
         self.server.send(line.encode())
         time.sleep(3)
         try:
@@ -207,7 +214,7 @@ class BotEngine:
             if line == "timed out":
                 continue
             if "PING" not in line:
-                log(line)
+                logger.info(line)
             if "VERSION" in line:
                 return True
             if self.on_channel and not ignore:
@@ -231,7 +238,7 @@ class BotEngine:
         if self.message_buffer:
             for message in self.message_buffer:
                 self.server.send(message.encode())
-                log(message)
+                logger.info(message)
                 self.message_buffer.remove(message)
 
     def ping(self, line):
@@ -254,9 +261,9 @@ class BotEngine:
         db = Session()
         now = datetime.now()
         now_str = str(now)[0:-8]
-        log("pobieram zadania z " + now_str, logging.DEBUG)
+        logger.debug("pobieram zadania z " + now_str)
         tasklist = db.query(Task).filter(Task.execution.like("{0}%".format(now_str)))
-        log("pobrano " + str(tasklist.count()), logging.DEBUG)
+        logger.debug("pobrano " + str(tasklist.count()))
         for t in tasklist:
             task_time = dateutil.parser.parse(t.execution)
             if task_time <= now:
@@ -314,12 +321,12 @@ class BotEngine:
             return True
         elif c >= 0:
             command = line[c + len(self.cmd_trigger):]
-            log("Komenda: " + command)
+            logger.info("Komenda: " + command)
             if "nick" in command.lower():
                 self.nick = command[command.find("NICK") + 5:].strip()
-                log("Nowy nick: " + self.nick)
+                logger.info("Nowy nick: " + self.nick)
             text = "%s \r\n" % command.strip()
-            log(text)
+            logger.info(text)
             self.server.send(text.encode())
             return True
         return False
@@ -357,20 +364,23 @@ class BotEngine:
         text = self.get_message(line).lower()
         result = ""
         if len(text) >= 4 and text[0] == self.crypto_trigger:
-            currency = text[1:].strip()
             if self.priv(text):
                 end = line.find(self.nick_end)
                 target = text[1:end]
             result = nick + ": "
             try:
                 if ":" in text:
+                    currency = text[1:text.index(":")]
                     result += "{0:.2f} PLN".format(crypto.get_price_pln(currency))
                 elif "%" in text:
+                    currency = text[1:text.index("%")]
                     result += "{0:.2f} % w ciągu 24h".format(crypto.change_24h('bitfinex', currency))
                 else:
+                    currency = text[1:].strip()
                     result += "{0:.2f} USD".format(crypto.get_price_usd('bitfinex', currency))
             except Exception as ex:
-                result += "Cholibka, nie widzę wyraźnie. {0}".format(str(ex))
+                logger.exception(ex)
+                result += "Cholibka, nie widzę wyraźnie. {0}".format(ex.message)
             self.send_message(result, target)
             return True
         return False
@@ -408,16 +418,16 @@ class BotEngine:
             time_start = None
             if a >= 0:
                 time_start = a + len(self.alarm_trigger) + 1
-                log("alarm (od {0})".format(time_start))
+                logger.info("alarm (od {0})".format(time_start))
             if t >= 0:
                 time_start = t + len(self.timer_trigger) + 1
-                log("timer (od {0})".format(time_start))
+                logger.info("timer (od {0})".format(time_start))
             timestring = msg[time_start:time_start + 8].strip()
-            log("timestring=" + timestring, logging.DEBUG)
+            logger.debug("timestring=" + timestring)
             message = msg[time_start + 9:].strip()
             if self.antywojak(nick, mask, message):
                 return False
-            log("message=" + message, logging.DEBUG)
+            logging.debug("message=" + message)
             if len(message) == 0:
                 message = None
             try:
@@ -448,7 +458,7 @@ class BotEngine:
             self.server.send(line.encode())
         else:
             self.message_buffer.append(line)
-        log(line)
+        logger.info(line)
 
     def get_title(self, url, target=None):
         try:
@@ -462,7 +472,7 @@ class BotEngine:
         except requests.ConnectionError:
             self.send_message("Nie wiem nic o takiej stronie", target)
         except Exception as ex:
-            log(str(ex), logging.ERROR)
+            logger.exception(ex)
 
     def register_on_server(self, pword, mail):
         line = "PRIVMSG nickserv register {0} {1} \r\n".format(pword, mail)
@@ -470,22 +480,22 @@ class BotEngine:
 
     def identify(self, pword):
         line = "IDENTIFY {0} \r\n".format(pword)
-        log(line)
+        logger.info(line)
         self.server.send(line.encode())
 
     def recover(self, pword):
         line = "PRIVMSG NickServ recover {0} {1} \r\n".format(self.nick, pword)
-        log(line)
+        logger.info(line)
         self.server.send(line.encode())
 
     def kick(self, channel, target, reason=""):
         line = "KICK {0} {1} {2} \r\n".format(channel, target, reason)
-        log(line)
+        logger.info(line)
         self.server.send(line.encode())
 
     def ban(self, channel, target):
         line = "MODE {0} +b {1} \r\n".format(channel, target)
-        log(line)
+        logger.info(line)
         self.server.send(line.encode())
 
     def antywojak(self, nick, mask, message):
@@ -494,7 +504,7 @@ class BotEngine:
         m = message.lower()
         for word in restricted:
             if word in m:
-                log("Znaleziono zakazane słowo '{0}' w wiadomości '{1}'".format(word, m), logging.DEBUG)
+                logger.info("Znaleziono zakazane słowo '{0}' w wiadomości '{1}'".format(word, m))
                 self.kick(self.channel, nick, "Autodenuncjacja")
                 self.ban(self.channel, mask)
                 return True
@@ -520,4 +530,4 @@ if __name__ == "__main__":
     try:
         app.run(host="0.0.0.0", port=5555)
     except Exception as ex:
-        log(str(ex), logging.ERROR)
+        logger.exception(str(ex))
